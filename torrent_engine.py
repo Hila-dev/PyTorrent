@@ -90,12 +90,14 @@ class TorrentEngine:
         except Exception:
             return str(id(handle))
 
-    def add_torrent_file(self, torrent_path: str) -> str:
+    def add_torrent_file(self, torrent_path: str, file_priorities: List[int] | None = None) -> str:
         info = lt.torrent_info(torrent_path)
         params = {
             "ti": info,
             "save_path": self.download_path,
         }
+        if file_priorities is not None:
+            params["file_priorities"] = file_priorities
         handle = self._session.add_torrent(params)
         tid = self._get_torrent_id(handle)
         self._torrents[tid] = handle
@@ -121,6 +123,19 @@ class TorrentEngine:
         self._save_state()
         return tid
 
+    def inspect_torrent_file(self, torrent_path: str) -> dict:
+        info = lt.torrent_info(torrent_path)
+        files = info.files()
+        file_list = []
+        for idx in range(files.num_files()):
+            file_list.append(
+                {
+                    "path": files.file_path(idx),
+                    "size": files.file_size(idx),
+                }
+            )
+        return {"name": info.name(), "files": file_list}
+
     def get_status_list(self) -> List[dict]:
         result: List[dict] = []
         to_remove: List[str] = []
@@ -131,21 +146,37 @@ class TorrentEngine:
                 to_remove.append(tid)
                 continue
             state_names = [
-                "queued",
-                "checking",
-                "downloading metadata",
-                "downloading",
-                "finished",
-                "seeding",
-                "allocating",
-                "checking fastresume",
+                "Queued",
+                "Checking",
+                "Downloading metadata",
+                "Downloading",
+                "Finished",
+                "Seeding",
+                "Allocating",
+                "Checking fastresume",
             ]
             if 0 <= s.state < len(state_names):
                 state = state_names[s.state]
             else:
-                state = "unknown"
-            total_size = int(getattr(s, "total_wanted", 0))
+                state = "Unknown"
             downloaded = int(getattr(s, "total_done", 0))
+            total_size = int(getattr(s, "total_wanted", 0))
+            try:
+                info_obj = handle.get_torrent_info()
+                files = info_obj.files()
+                try:
+                    priorities = handle.file_priorities()
+                except Exception:
+                    priorities = []
+                if priorities and len(priorities) == files.num_files():
+                    size_sum = 0
+                    for idx in range(files.num_files()):
+                        if priorities[idx] > 0:
+                            size_sum += files.file_size(idx)
+                    if size_sum > 0:
+                        total_size = size_sum
+            except Exception:
+                pass
             progress = float(getattr(s, "progress", 0.0))
             download_rate = float(getattr(s, "download_rate", 0.0))
             upload_rate = float(getattr(s, "upload_rate", 0.0))
@@ -163,6 +194,14 @@ class TorrentEngine:
                     name = ""
             is_paused = bool(getattr(s, "paused", False))
             is_seeding = bool(getattr(s, "is_seeding", False))
+            display_state = state
+            if is_paused:
+                display_state = "Paused"
+            elif is_seeding:
+                display_state = "Seeding"
+            else:
+                if 0.0 < progress < 1.0 and download_rate < 50 * 1024:
+                    display_state = "Resuming"
             num_peers = int(getattr(s, "num_peers", 0))
             result.append(
                 {
@@ -171,7 +210,7 @@ class TorrentEngine:
                     "progress": progress,
                     "download_rate": download_rate,
                     "upload_rate": upload_rate,
-                    "state": state,
+                    "state": display_state,
                     "total_size": total_size,
                     "downloaded": downloaded,
                     "num_peers": num_peers,

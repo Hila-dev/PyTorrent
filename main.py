@@ -6,11 +6,14 @@ from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
+    QDialog,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QTableWidget,
     QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QPushButton,
     QLineEdit,
     QFileDialog,
@@ -55,6 +58,77 @@ def human_eta(seconds: int) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+class FileSelectionDialog(QDialog):
+    def __init__(self, parent: QWidget, torrent_name: str, files: list[dict]):
+        super().__init__(parent)
+        self.setWindowTitle(f"Select files - {torrent_name}")
+        self.resize(800, 500)
+        layout = QVBoxLayout(self)
+        label = QLabel("Select files to download:", self)
+        layout.addWidget(label)
+        self._items: list[QTreeWidgetItem] = []
+        self.tree = QTreeWidget(self)
+        self.tree.setHeaderLabels(["Name", "Size"])
+        header = self.tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(0, 600)
+        header.resizeSection(1, 140)
+        self.tree.setStyleSheet(
+            "QTreeWidget::indicator {"
+            "width: 14px; height: 14px;"
+            "border: 1px solid #40a9ff;"
+            "background-color: #1e222d;"
+            "}"
+            "QTreeWidget::indicator:checked {"
+            "background-color: #40a9ff;"
+            "border: 1px solid #40a9ff;"
+            "}"
+        )
+        self.tree.setIndentation(8)
+        for info in files:
+            item = QTreeWidgetItem(self.tree)
+            item.setText(0, info["path"])
+            item.setText(1, human_size(int(info["size"])) if info["size"] > 0 else "")
+            item.setCheckState(0, Qt.CheckState.Checked)
+            self._items.append(item)
+        self.tree.expandAll()
+        layout.addWidget(self.tree)
+        buttons_layout = QHBoxLayout()
+        select_all_button = QPushButton("Select all", self)
+        select_none_button = QPushButton("Select none", self)
+        ok_button = QPushButton("OK", self)
+        cancel_button = QPushButton("Cancel", self)
+        buttons_layout.addWidget(select_all_button)
+        buttons_layout.addWidget(select_none_button)
+        buttons_layout.addStretch()
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addLayout(buttons_layout)
+
+        def set_all_checked(checked: bool) -> None:
+            state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            for it in self._items:
+                it.setCheckState(0, state)
+
+        select_all_button.clicked.connect(lambda: set_all_checked(True))
+        select_none_button.clicked.connect(lambda: set_all_checked(False))
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+
+    def priorities(self) -> list[int]:
+        result: list[int] = []
+        for it in self._items:
+            result.append(1 if it.checkState(0) == Qt.CheckState.Checked else 0)
+        return result
+
+    def accept(self) -> None:  # type: ignore[override]
+        if not any(it.checkState(0) == Qt.CheckState.Checked for it in self._items):
+            QMessageBox.information(self, "Files", "Select at least one file to download.")
+            return
+        super().accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -70,6 +144,7 @@ class MainWindow(QMainWindow):
         self._status_by_id = {}
         self._init_ui()
         self._init_timer()
+        self.setAcceptDrops(True)
 
     def _init_ui(self) -> None:
         central = QWidget(self)
@@ -142,11 +217,14 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAcceptDrops(True)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         for col in range(2, 9):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        header.resizeSection(1, 400)
+        header.resizeSection(2, 120)
         self.table.setColumnHidden(0, True)
         vheader = self.table.verticalHeader()
         vheader.setVisible(False)
@@ -177,11 +255,7 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        try:
-            self.engine.add_torrent_file(path)
-            self.refresh_status()
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", f"Failed to add torrent:\n{exc}")
+        self._add_torrent_with_file_selection(path)
 
     def add_magnet(self) -> None:
         magnet = self.magnet_edit.text().strip()
@@ -242,6 +316,81 @@ class MainWindow(QMainWindow):
     def open_download_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(self.download_path))
 
+    def _set_drag_highlight(self, active: bool) -> None:
+        if active:
+            self.table.setStyleSheet(
+                "QTableWidget {"
+                "border: 2px dashed #40a9ff;"
+                "background-color: #323742;"
+                "}"
+            )
+        else:
+            self.table.setStyleSheet("")
+
+    def _handle_dropped_urls(self, urls) -> None:
+        paths: list[str] = []
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            if not path.lower().endswith(".torrent"):
+                continue
+            paths.append(path)
+        if not paths:
+            return
+
+        def process() -> None:
+            handled = False
+            for path in paths:
+                if self._add_torrent_with_file_selection(path):
+                    handled = True
+            if handled:
+                self.refresh_status()
+
+        QTimer.singleShot(0, process)
+
+    def _add_torrent_with_file_selection(self, torrent_path: str) -> bool:
+        try:
+            info = self.engine.inspect_torrent_file(torrent_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to read torrent file:\n{exc}")
+            return False
+
+        files = info.get("files", [])
+        dialog = FileSelectionDialog(self, info.get("name", ""), files)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        priorities = dialog.priorities()
+        try:
+            self.engine.add_torrent_file(torrent_path, file_priorities=priorities)
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to add torrent:\n{exc}")
+            return False
+
+    def dragEnterEvent(self, event):  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile() and url.toLocalFile().lower().endswith(".torrent"):
+                    event.acceptProposedAction()
+                    self._set_drag_highlight(True)
+                    return
+        self._set_drag_highlight(False)
+        event.ignore()
+
+    def dropEvent(self, event):  # type: ignore[override]
+        if not event.mimeData().hasUrls():
+            self._set_drag_highlight(False)
+            event.ignore()
+            return
+        self._handle_dropped_urls(event.mimeData().urls())
+        event.acceptProposedAction()
+        self._set_drag_highlight(False)
+
+    def dragLeaveEvent(self, event):  # type: ignore[override]
+        self._set_drag_highlight(False)
+        event.accept()
+
     def refresh_status(self) -> None:
         statuses = self.engine.get_status_list()
         self._status_by_id = {s["id"]: s for s in statuses}
@@ -269,8 +418,28 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, col, item)
 
     def eventFilter(self, obj, event):  # type: ignore[override]
-        if obj is self.table and event.type() == QEvent.Type.FocusOut:
-            self.table.clearSelection()
+        if obj is self.table:
+            if event.type() == QEvent.Type.FocusOut:
+                self.table.clearSelection()
+            elif event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if event.mimeData().hasUrls():
+                    for url in event.mimeData().urls():
+                        if url.isLocalFile() and url.toLocalFile().lower().endswith(".torrent"):
+                            event.acceptProposedAction()
+                            self._set_drag_highlight(True)
+                            return True
+                self._set_drag_highlight(False)
+                event.ignore()
+                return True
+            elif event.type() == QEvent.Type.Drop:
+                if event.mimeData().hasUrls():
+                    self._handle_dropped_urls(event.mimeData().urls())
+                    event.acceptProposedAction()
+                    self._set_drag_highlight(False)
+                    return True
+            elif event.type() == QEvent.Type.DragLeave:
+                self._set_drag_highlight(False)
+                return True
         return super().eventFilter(obj, event)
 
     def changeEvent(self, event):  # type: ignore[override]
@@ -282,15 +451,36 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.tray is not None:
-            box = QMessageBox(self)
-            box.setWindowTitle("Exit")
-            box.setText("Do you want to close the program or minimize it to the tray?")
-            close_button = box.addButton("Close program", QMessageBox.ButtonRole.AcceptRole)
-            minimize_button = box.addButton("Minimize to tray", QMessageBox.ButtonRole.RejectRole)
-            box.setDefaultButton(minimize_button)
-            box.exec()
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Exit")
+            layout = QVBoxLayout(dialog)
+            label = QLabel("Do you want to close the program or minimize it to the tray?", dialog)
+            layout.addWidget(label)
+            buttons_layout = QHBoxLayout()
+            close_button = QPushButton("Close program", dialog)
+            minimize_button = QPushButton("Minimize to tray", dialog)
+            buttons_layout.addWidget(close_button)
+            buttons_layout.addStretch()
+            buttons_layout.addWidget(minimize_button)
+            layout.addLayout(buttons_layout)
 
-            if box.clickedButton() is minimize_button:
+            result = {"choice": None}
+
+            def on_close_clicked() -> None:
+                result["choice"] = "close"
+                dialog.accept()
+
+            def on_minimize_clicked() -> None:
+                result["choice"] = "minimize"
+                dialog.accept()
+
+            close_button.clicked.connect(on_close_clicked)
+            minimize_button.clicked.connect(on_minimize_clicked)
+
+            dialog.setFixedSize(dialog.sizeHint())
+            dialog.exec()
+
+            if result["choice"] == "minimize":
                 event.ignore()
                 self.hide()
                 return
