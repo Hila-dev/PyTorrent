@@ -58,7 +58,4 @@ When the app starts:
 - Download path defaults to your home `Downloads` directory, but can be changed in the UI.
 - Torrents and their metadata are persisted in the `.pytorrent/state.json` file next to the application, so active torrents are restored on restart.
 
-## License
-
-This project is provided as-is for personal use and experimentation. Add a license file (e.g. MIT) if you plan to distribute or open source it.
 
