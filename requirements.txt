@@ -1,0 +1,3 @@
+PySide6
+libtorrent
+libtorrent-windows-dll
