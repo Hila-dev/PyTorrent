@@ -1,3 +1,5 @@
+![My Image](https://github.com/Hila-dev/PyTorrent/blob/ac544ad9c699abdd5552b3d927df3d11da10fd57/Screenshot%202025-11-23%20043544.png)
+
 # PyTorrent
 
 PyTorrent is a minimal desktop BitTorrent client written in Python using **PySide6** for the GUI and **libtorrent** for the torrent backend. It supports both `.torrent` files and magnet links and provides a simple, modern interface.
@@ -59,3 +61,4 @@ When the app starts:
 ## License
 
 This project is provided as-is for personal use and experimentation. Add a license file (e.g. MIT) if you plan to distribute or open source it.
+
